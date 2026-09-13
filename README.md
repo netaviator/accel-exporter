@@ -164,6 +164,28 @@ The exporter exposes the following metrics:
 - `accel_sessions_active`: Number of active sessions
 - `accel_sessions_finishing`: Number of sessions finishing
 
+**L2TP:**
+
+- `accel_l2tp_tunnels_starting` / `_active` / `_finishing`: L2TP tunnel counts
+- `accel_l2tp_sessions_starting` / `_active` / `_finishing` (Labels: `channel` = `control` or `data`):
+  L2TP session counts, split by control-channel (tunnel/session control plane) vs.
+  data-channel (the actual PPP data session)
+
+**L2TP switch** (requires [`netaviator/accel-ppp`](https://github.com/netaviator/accel-ppp)'s
+l2tp-switch fork feature — absent on plain upstream accel-ppp, in which case these series
+simply don't appear rather than erroring the scrape):
+
+- `accel_l2tp_switch_active`: Currently active relayed calls, across all targets (from `show stat`)
+- `accel_l2tp_switch_lns_rx_bytes_total` / `_lns_tx_bytes_total`: Aggregate bytes to/from all targets
+- `accel_l2tp_switch_target_up` (Labels: `target`): Whether a target's tunnel is up (1) or down (0)
+- `accel_l2tp_switch_target_active` (Labels: `target`): Active relayed calls on this target
+- `accel_l2tp_switch_target_bytes_in_total` / `_bytes_out_total` (Labels: `target`): Per-target byte counts
+- `accel_l2tp_switch_calls_matched_total` / `_placed_total` / `_connected_total`: Aggregate call
+  lifecycle counters (from `accel-cmd l2tp switch show`) — `matched >= placed >= connected` always
+  holds; a gap between them indicates calls failing to place/connect, not idleness
+- `accel_l2tp_switch_calls_active`: Same value as `accel_l2tp_switch_active`, sourced from
+  `l2tp switch show` instead of `show stat`
+
 **PPPoE:**
 
 - `accel_pppoe_starting`: Number of PPPoE sessions starting

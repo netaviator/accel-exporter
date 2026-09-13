@@ -23,7 +23,41 @@ type Stats struct {
 	Core          CoreStats
 	Sessions      SessionStats
 	PPPoE         PPPoEStats
+	L2TP          L2TPStats
 	RadiusServers map[string]RadiusStats
+}
+
+// L2TPStats contains L2TP protocol metrics from "show stat"'s "l2tp:" block
+// (accel-pppd/ctrl/l2tp/l2tp.c show_stat_exec), including the
+// netaviator/accel-ppp fork's l2tp-switch extension. The l2tp-switch
+// sub-block is fork-specific but always emitted by that fork's binary
+// whenever the l2tp module is loaded, whether or not any switch target is
+// actually configured (a zeroed block, not an absent one) — safe to always
+// parse. Per-target detail (up/down, per-target byte counts, matched/
+// placed/connected call counts) is a separate command, "l2tp switch show" —
+// see SwitchStats/CollectSwitchShow below, not this struct.
+type L2TPStats struct {
+	Tunnels         TunnelSessionStats
+	SessionsControl TunnelSessionStats
+	SessionsData    TunnelSessionStats
+	Switch          L2TPSwitchStats
+}
+
+// TunnelSessionStats is the starting/active/finishing triple shared by
+// "sessions:" and each of l2tp's three starting/active/finishing sub-blocks.
+type TunnelSessionStats struct {
+	Starting  float64
+	Active    float64
+	Finishing float64
+}
+
+// L2TPSwitchStats is the aggregate l2tp-switch counters from "show stat" —
+// see roles/accel_ppp/README.md's accel_ppp_l2tp_switch_targets/_prefixes/
+// _call_ids for the feature this reports on.
+type L2TPSwitchStats struct {
+	Active     float64
+	LNSRxBytes float64
+	LNSTxBytes float64
 }
 
 // CoreStats contains core metrics
@@ -155,6 +189,14 @@ func parseStats(output string) (*Stats, error) {
 			parseSessionsSection(&stats.Sessions, key, value)
 		case "pppoe":
 			parsePPPoESection(&stats.PPPoE, key, value)
+		case "tunnels":
+			parseTunnelSessionStats(&stats.L2TP.Tunnels, key, value)
+		case "sessions (control channels)":
+			parseTunnelSessionStats(&stats.L2TP.SessionsControl, key, value)
+		case "sessions (data channels)":
+			parseTunnelSessionStats(&stats.L2TP.SessionsData, key, value)
+		case "l2tp-switch":
+			parseL2TPSwitchSection(&stats.L2TP.Switch, key, value)
 		default:
 			if strings.HasPrefix(section, "radius") {
 				radiusMatch := regexp.MustCompile(`radius\((\d+), ([\d\.]+)\)`).FindStringSubmatch(section)
@@ -411,4 +453,159 @@ func parseRadiusSection(radius *RadiusStats, key, value string) {
 			radius.InterimAvgTime1m = v[1]
 		}
 	}
+}
+
+func parseTunnelSessionStats(s *TunnelSessionStats, key, value string) {
+	f := atof(value)
+	switch key {
+	case "starting":
+		s.Starting = f
+	case "active":
+		s.Active = f
+	case "finishing":
+		s.Finishing = f
+	}
+}
+
+func parseL2TPSwitchSection(s *L2TPSwitchStats, key, value string) {
+	f := atof(value)
+	switch key {
+	case "active":
+		s.Active = f
+	case "lns_rx_bytes":
+		s.LNSRxBytes = f
+	case "lns_tx_bytes":
+		s.LNSTxBytes = f
+	}
+}
+
+// SwitchStats is the per-target detail from "accel-cmd l2tp switch show" —
+// a separate command from "show stat", parsed separately below because its
+// text shape (arrow-separated target lines, occasional interleaved per-call
+// detail lines, then a flat "calls:" block) doesn't fit the generic
+// section-keyed model parseStats uses. Confirmed against
+// accel-pppd/ctrl/l2tp/l2tp.c's l2tp_switch_show_exec.
+type SwitchStats struct {
+	Targets []SwitchTarget
+	Calls   SwitchCalls
+}
+
+// SwitchTarget is one configured l2tp-switch target (accel_ppp_l2tp_switch_targets
+// in roles/accel_ppp) and its live tunnel state.
+type SwitchTarget struct {
+	Name     string
+	PeerAddr string
+	PeerPort string
+	Up       bool
+	Active   float64
+	BytesIn  float64
+	BytesOut float64
+}
+
+// SwitchCalls are the aggregate lifecycle counters across all targets —
+// matched a rule, placed to a target, connected on the downstream leg, and
+// currently active. matched >= placed >= connected always holds; a gap
+// between them indicates calls failing to place/connect, not just idle
+// (see roles/accel_ppp/README.md's L2TP switch section).
+type SwitchCalls struct {
+	Matched   float64
+	Placed    float64
+	Connected float64
+	Active    float64
+}
+
+// targetLinePattern matches one "targets:" line from "l2tp switch show", e.g.
+// "test1 -> 2.29.46.254:1701 [up] active=0 bytes_in=1639 bytes_out=1690"
+// (accel-pppd/ctrl/l2tp/l2tp.c: "%s -> %s:%hu [%s] active=%u bytes_in=%llu
+// bytes_out=%llu"). Peer address is always an IPv4 dotted-quad (inet_ntoa),
+// so no IPv6-in-host-port ambiguity to worry about.
+var targetLinePattern = regexp.MustCompile(
+	`^(\S+) -> ([\d.]+):(\d+) \[(up|down)\] active=(\d+) bytes_in=(\d+) bytes_out=(\d+)$`,
+)
+
+// CollectSwitchShow executes "accel-cmd l2tp switch show" and parses its
+// output. Distinct from CollectStats/"show stat" — see SwitchStats' doc
+// comment for why this needs its own command and parser. Safe to call even
+// when no l2tp-switch target is configured (an empty "targets:" list and a
+// zeroed "calls:" block, not an error) or against an accel-ppp build that
+// predates the l2tp-switch feature entirely (a non-zero exit / "command
+// unknown", surfaced as an error here for the caller to treat as "unsupported"
+// rather than a fatal scrape failure).
+func CollectSwitchShow(accelCmdPath string, timeout time.Duration) (*SwitchStats, error) {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, accelCmdPath, "l2tp", "switch", "show")
+	cmd.WaitDelay = 2 * time.Second
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	return parseSwitchShow(out.String())
+}
+
+// parseSwitchShow parses "accel-cmd l2tp switch show" output.
+func parseSwitchShow(output string) (*SwitchStats, error) {
+	stats := &SwitchStats{}
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	var section string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = strings.TrimSpace(line)
+
+		if line == "" {
+			continue
+		}
+
+		if line == "targets:" || line == "calls:" {
+			section = strings.TrimSuffix(line, ":")
+			continue
+		}
+
+		switch section {
+		case "targets":
+			if m := targetLinePattern.FindStringSubmatch(line); m != nil {
+				stats.Targets = append(stats.Targets, SwitchTarget{
+					Name:     m[1],
+					PeerAddr: m[2],
+					PeerPort: m[3],
+					Up:       m[4] == "up",
+					Active:   atof(m[5]),
+					BytesIn:  atof(m[6]),
+					BytesOut: atof(m[7]),
+				})
+			}
+			// Any other line under "targets:" (e.g. accel-ppp's interleaved
+			// "call: <...>" per-call detail lines) is intentionally skipped —
+			// not part of this exporter's metric surface.
+		case "calls":
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			f := atof(value)
+			switch key {
+			case "matched":
+				stats.Calls.Matched = f
+			case "placed":
+				stats.Calls.Placed = f
+			case "connected":
+				stats.Calls.Connected = f
+			case "active":
+				stats.Calls.Active = f
+			}
+		}
+	}
+
+	return stats, scanner.Err()
 }

@@ -18,6 +18,20 @@ import (
 // radiusLabels are the labels attached to every per-RADIUS-server metric.
 var radiusLabels = []string{"server_id", "server_ip"}
 
+// l2tpChannelLabels distinguishes the two named session sub-blocks accel-ppp
+// reports under "l2tp:" — control-channel (the L2TP session/tunnel control
+// plane) and data-channel (the actual PPP data session) — one metric family
+// with a label, not two separate metric names, matching this exporter's
+// existing radiusLabels convention.
+var l2tpChannelLabels = []string{"channel"}
+
+// l2tpSwitchTargetLabels are the labels attached to every per-target
+// l2tp-switch metric. Cardinality is bounded by the number of configured
+// accel_ppp_l2tp_switch_targets — operator-defined and small, not
+// per-subscriber (see roles/accel_exporter/README.md's existing per-realm
+// cardinality caveat, which this does not reproduce).
+var l2tpSwitchTargetLabels = []string{"target"}
+
 func newDesc(name, help string, labels ...string) *prometheus.Desc {
 	return prometheus.NewDesc(name, help, labels, nil)
 }
@@ -45,6 +59,31 @@ var (
 	sessionsStartingDesc  = newDesc("accel_sessions_starting", "Number of sessions starting.")
 	sessionsActiveDesc    = newDesc("accel_sessions_active", "Number of active sessions.")
 	sessionsFinishingDesc = newDesc("accel_sessions_finishing", "Number of sessions finishing.")
+
+	l2tpTunnelsStartingDesc  = newDesc("accel_l2tp_tunnels_starting", "Number of L2TP tunnels starting.")
+	l2tpTunnelsActiveDesc    = newDesc("accel_l2tp_tunnels_active", "Number of active L2TP tunnels.")
+	l2tpTunnelsFinishingDesc = newDesc("accel_l2tp_tunnels_finishing", "Number of L2TP tunnels finishing.")
+
+	l2tpSessionsStartingDesc  = newDesc("accel_l2tp_sessions_starting", "Number of L2TP sessions starting, by channel (control/data).", l2tpChannelLabels...)
+	l2tpSessionsActiveDesc    = newDesc("accel_l2tp_sessions_active", "Number of active L2TP sessions, by channel (control/data).", l2tpChannelLabels...)
+	l2tpSessionsFinishingDesc = newDesc("accel_l2tp_sessions_finishing", "Number of L2TP sessions finishing, by channel (control/data).", l2tpChannelLabels...)
+
+	l2tpSwitchActiveDesc     = newDesc("accel_l2tp_switch_active", "Number of currently active l2tp-switch relayed calls, across all targets.")
+	l2tpSwitchLNSRxBytesDesc = newDesc("accel_l2tp_switch_lns_rx_bytes_total", "Total bytes received from l2tp-switch downstream targets.")
+	l2tpSwitchLNSTxBytesDesc = newDesc("accel_l2tp_switch_lns_tx_bytes_total", "Total bytes sent to l2tp-switch downstream targets.")
+
+	l2tpSwitchTargetUpDesc       = newDesc("accel_l2tp_switch_target_up", "Whether the l2tp-switch target's tunnel is up (1) or down (0).", l2tpSwitchTargetLabels...)
+	l2tpSwitchTargetActiveDesc   = newDesc("accel_l2tp_switch_target_active", "Number of currently active relayed calls on this l2tp-switch target.", l2tpSwitchTargetLabels...)
+	l2tpSwitchTargetBytesInDesc  = newDesc("accel_l2tp_switch_target_bytes_in_total", "Total bytes received from this l2tp-switch target.", l2tpSwitchTargetLabels...)
+	l2tpSwitchTargetBytesOutDesc = newDesc("accel_l2tp_switch_target_bytes_out_total", "Total bytes sent to this l2tp-switch target.", l2tpSwitchTargetLabels...)
+
+	// Calls are aggregate across all targets — "l2tp switch show" doesn't
+	// break matched/placed/connected down per-target, only active (via each
+	// target's own "active=" field, exposed above).
+	l2tpSwitchCallsMatchedDesc   = newDesc("accel_l2tp_switch_calls_matched_total", "Total incoming L2TP calls matched by an l2tp-switch rule.")
+	l2tpSwitchCallsPlacedDesc    = newDesc("accel_l2tp_switch_calls_placed_total", "Total matched calls placed to a downstream target.")
+	l2tpSwitchCallsConnectedDesc = newDesc("accel_l2tp_switch_calls_connected_total", "Total placed calls that connected on the downstream leg.")
+	l2tpSwitchCallsActiveDesc    = newDesc("accel_l2tp_switch_calls_active", "Number of currently active l2tp-switch relayed calls (same value as accel_l2tp_switch_active, from the l2tp switch show command instead of show stat).")
 
 	pppoeStartingDesc    = newDesc("accel_pppoe_starting", "Number of PPPoE sessions starting.")
 	pppoeActiveDesc      = newDesc("accel_pppoe_active", "Number of active PPPoE sessions.")
@@ -88,6 +127,11 @@ var allDescs = []*prometheus.Desc{
 	coreContextCountDesc, coreContextSleepingDesc, coreContextPendingDesc,
 	coreMDHandlerCountDesc, coreMDHandlerPendingDesc, coreTimerCountDesc, coreTimerPendingDesc,
 	sessionsStartingDesc, sessionsActiveDesc, sessionsFinishingDesc,
+	l2tpTunnelsStartingDesc, l2tpTunnelsActiveDesc, l2tpTunnelsFinishingDesc,
+	l2tpSessionsStartingDesc, l2tpSessionsActiveDesc, l2tpSessionsFinishingDesc,
+	l2tpSwitchActiveDesc, l2tpSwitchLNSRxBytesDesc, l2tpSwitchLNSTxBytesDesc,
+	l2tpSwitchTargetUpDesc, l2tpSwitchTargetActiveDesc, l2tpSwitchTargetBytesInDesc, l2tpSwitchTargetBytesOutDesc,
+	l2tpSwitchCallsMatchedDesc, l2tpSwitchCallsPlacedDesc, l2tpSwitchCallsConnectedDesc, l2tpSwitchCallsActiveDesc,
 	pppoeStartingDesc, pppoeActiveDesc, pppoeDelayedPADODesc, pppoeRecvPADIDesc, pppoeDropPADIDesc,
 	pppoeSentPADODesc, pppoeRecvPADRDesc, pppoeRecvPADRDupDesc, pppoeSentPADSDesc, pppoeFilteredDesc,
 	radiusStateDesc, radiusFailCountDesc, radiusRequestCountDesc, radiusQueueLengthDesc,
@@ -183,6 +227,30 @@ func (c *AccelCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(sessionsActiveDesc, stats.Sessions.Active)
 	gauge(sessionsFinishingDesc, stats.Sessions.Finishing)
 
+	// L2TP
+	gauge(l2tpTunnelsStartingDesc, stats.L2TP.Tunnels.Starting)
+	gauge(l2tpTunnelsActiveDesc, stats.L2TP.Tunnels.Active)
+	gauge(l2tpTunnelsFinishingDesc, stats.L2TP.Tunnels.Finishing)
+	chGauge := func(d *prometheus.Desc, v float64, channel string) {
+		ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, channel)
+	}
+	chGauge(l2tpSessionsStartingDesc, stats.L2TP.SessionsControl.Starting, "control")
+	chGauge(l2tpSessionsActiveDesc, stats.L2TP.SessionsControl.Active, "control")
+	chGauge(l2tpSessionsFinishingDesc, stats.L2TP.SessionsControl.Finishing, "control")
+	chGauge(l2tpSessionsStartingDesc, stats.L2TP.SessionsData.Starting, "data")
+	chGauge(l2tpSessionsActiveDesc, stats.L2TP.SessionsData.Active, "data")
+	chGauge(l2tpSessionsFinishingDesc, stats.L2TP.SessionsData.Finishing, "data")
+	gauge(l2tpSwitchActiveDesc, stats.L2TP.Switch.Active)
+	counter(l2tpSwitchLNSRxBytesDesc, stats.L2TP.Switch.LNSRxBytes)
+	counter(l2tpSwitchLNSTxBytesDesc, stats.L2TP.Switch.LNSTxBytes)
+
+	// l2tp-switch per-target/call detail comes from a separate command
+	// ("l2tp switch show", not "show stat") — collected and emitted
+	// independently so a failure here (e.g. an accel-ppp build that
+	// predates l2tp-switch entirely) only drops these specific series, not
+	// the whole scrape or accel_up.
+	c.collectSwitchShow(ch)
+
 	// PPPoE
 	gauge(pppoeStartingDesc, stats.PPPoE.Starting)
 	gauge(pppoeActiveDesc, stats.PPPoE.Active)
@@ -236,4 +304,33 @@ func (c *AccelCollector) Collect(ch chan<- prometheus.Metric) {
 		rGauge(radiusInterimAvgTime5mDesc, rs.InterimAvgTime5m/1000.0)
 		rGauge(radiusInterimAvgTime1mDesc, rs.InterimAvgTime1m/1000.0)
 	}
+}
+
+// collectSwitchShow runs "accel-cmd l2tp switch show" and emits its metrics.
+// Failure here (an old accel-ppp without the l2tp-switch feature, or a
+// transient accel-cmd error) is logged and simply drops these series for this
+// scrape rather than affecting accel_up or the rest of Collect — this is
+// deliberately not a scrape-failure trigger.
+func (c *AccelCollector) collectSwitchShow(ch chan<- prometheus.Metric) {
+	sw, err := parser.CollectSwitchShow(c.accelCmdPath, c.timeout)
+	if err != nil {
+		log.Printf("l2tp switch show unavailable (older accel-ppp without l2tp-switch, or a transient error?): %v", err)
+		return
+	}
+
+	for _, t := range sw.Targets {
+		up := 0.0
+		if t.Up {
+			up = 1.0
+		}
+		ch <- prometheus.MustNewConstMetric(l2tpSwitchTargetUpDesc, prometheus.GaugeValue, up, t.Name)
+		ch <- prometheus.MustNewConstMetric(l2tpSwitchTargetActiveDesc, prometheus.GaugeValue, t.Active, t.Name)
+		ch <- prometheus.MustNewConstMetric(l2tpSwitchTargetBytesInDesc, prometheus.CounterValue, t.BytesIn, t.Name)
+		ch <- prometheus.MustNewConstMetric(l2tpSwitchTargetBytesOutDesc, prometheus.CounterValue, t.BytesOut, t.Name)
+	}
+
+	ch <- prometheus.MustNewConstMetric(l2tpSwitchCallsMatchedDesc, prometheus.CounterValue, sw.Calls.Matched)
+	ch <- prometheus.MustNewConstMetric(l2tpSwitchCallsPlacedDesc, prometheus.CounterValue, sw.Calls.Placed)
+	ch <- prometheus.MustNewConstMetric(l2tpSwitchCallsConnectedDesc, prometheus.CounterValue, sw.Calls.Connected)
+	ch <- prometheus.MustNewConstMetric(l2tpSwitchCallsActiveDesc, prometheus.GaugeValue, sw.Calls.Active)
 }
