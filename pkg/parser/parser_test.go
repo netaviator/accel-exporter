@@ -105,6 +105,123 @@ radius(1, 10.0.0.1):
   interim avg time(5m/1m): 6.0 / 5.5
 `
 
+// sampleL2TP is a representative "show stat" capture of just the "l2tp:"
+// block, taken verbatim from accel-pppd/ctrl/l2tp/l2tp.c's show_stat_exec
+// (netaviator/accel-ppp fork) and cross-checked against a live accel-cmd
+// capture. Kept separate from sampleStat above (which predates l2tp support
+// in this exporter and deliberately isn't touched here) rather than merged
+// into it.
+const sampleL2TP = `l2tp:
+  tunnels:
+    starting: 0
+    active: 2
+    finishing: 0
+  sessions (control channels):
+    starting: 1
+    active: 3
+    finishing: 0
+  sessions (data channels):
+    starting: 0
+    active: 3
+    finishing: 1
+  l2tp-switch:
+    active: 1
+    lns_rx_bytes: 1690
+    lns_tx_bytes: 1639
+`
+
+func TestParseStatsL2TP(t *testing.T) {
+	st, err := parseStats(sampleL2TP)
+	if err != nil {
+		t.Fatalf("parseStats: %v", err)
+	}
+	wantEq(t, "L2TP.Tunnels.Active", st.L2TP.Tunnels.Active, 2)
+	wantEq(t, "L2TP.SessionsControl.Starting", st.L2TP.SessionsControl.Starting, 1)
+	wantEq(t, "L2TP.SessionsControl.Active", st.L2TP.SessionsControl.Active, 3)
+	wantEq(t, "L2TP.SessionsData.Active", st.L2TP.SessionsData.Active, 3)
+	wantEq(t, "L2TP.SessionsData.Finishing", st.L2TP.SessionsData.Finishing, 1)
+	wantEq(t, "L2TP.Switch.Active", st.L2TP.Switch.Active, 1)
+	wantEq(t, "L2TP.Switch.LNSRxBytes", st.L2TP.Switch.LNSRxBytes, 1690)
+	wantEq(t, "L2TP.Switch.LNSTxBytes", st.L2TP.Switch.LNSTxBytes, 1639)
+}
+
+// sampleSwitchShow is a representative "accel-cmd l2tp switch show" capture,
+// taken verbatim from a live capture and cross-checked against
+// l2tp_switch_show_exec.
+const sampleSwitchShow = `targets:
+  test1 -> 2.29.46.254:1701 [up] active=0 bytes_in=1639 bytes_out=1690
+  test2 -> 203.0.113.5:1701 [down] active=0 bytes_in=0 bytes_out=0
+calls:
+  matched: 3
+  placed: 3
+  connected: 3
+  active: 0
+`
+
+func TestParseSwitchShow(t *testing.T) {
+	sw, err := parseSwitchShow(sampleSwitchShow)
+	if err != nil {
+		t.Fatalf("parseSwitchShow: %v", err)
+	}
+	if len(sw.Targets) != 2 {
+		t.Fatalf("Targets = %d, want 2: %+v", len(sw.Targets), sw.Targets)
+	}
+	t1 := sw.Targets[0]
+	if t1.Name != "test1" || t1.PeerAddr != "2.29.46.254" || t1.PeerPort != "1701" || !t1.Up {
+		t.Errorf("Targets[0] = %+v, want test1 up at 2.29.46.254:1701", t1)
+	}
+	wantEq(t, "Targets[0].BytesIn", t1.BytesIn, 1639)
+	wantEq(t, "Targets[0].BytesOut", t1.BytesOut, 1690)
+
+	t2 := sw.Targets[1]
+	if t2.Name != "test2" || t2.Up {
+		t.Errorf("Targets[1] = %+v, want test2 down", t2)
+	}
+
+	wantEq(t, "Calls.Matched", sw.Calls.Matched, 3)
+	wantEq(t, "Calls.Placed", sw.Calls.Placed, 3)
+	wantEq(t, "Calls.Connected", sw.Calls.Connected, 3)
+	wantEq(t, "Calls.Active", sw.Calls.Active, 0)
+}
+
+// TestParseSwitchShowEmpty verifies the shape accel-ppp emits when no
+// l2tp-switch target is configured at all: an empty targets list and a
+// zeroed calls block, not an error — see SwitchStats' doc comment.
+func TestParseSwitchShowEmpty(t *testing.T) {
+	sw, err := parseSwitchShow("targets:\ncalls:\n  matched: 0\n  placed: 0\n  connected: 0\n  active: 0\n")
+	if err != nil {
+		t.Fatalf("parseSwitchShow: %v", err)
+	}
+	if len(sw.Targets) != 0 {
+		t.Errorf("Targets = %d, want 0", len(sw.Targets))
+	}
+	wantEq(t, "Calls.Matched", sw.Calls.Matched, 0)
+}
+
+// TestParseSwitchShowIgnoresCallDetailLines verifies an interleaved per-call
+// "call: ..." detail line under "targets:" (emitted only when a target has
+// an active tunnel, via l2tp_switch_show_exec's twalk) doesn't get
+// misparsed as a target or corrupt subsequent parsing.
+func TestParseSwitchShowIgnoresCallDetailLines(t *testing.T) {
+	in := `targets:
+  test1 -> 2.29.46.254:1701 [up] active=1 bytes_in=100 bytes_out=200
+  call: user1 tunnel 1-2 / 3-4
+calls:
+  matched: 1
+  placed: 1
+  connected: 1
+  active: 1
+`
+	sw, err := parseSwitchShow(in)
+	if err != nil {
+		t.Fatalf("parseSwitchShow: %v", err)
+	}
+	if len(sw.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1 (the \"call:\" line must not be parsed as a target): %+v", len(sw.Targets), sw.Targets)
+	}
+	wantEq(t, "Calls.Active", sw.Calls.Active, 1)
+}
+
 func wantEq(t *testing.T, name string, got, want float64) {
 	t.Helper()
 	if got != want {

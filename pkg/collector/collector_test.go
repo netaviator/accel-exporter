@@ -142,6 +142,140 @@ func TestCollectSuccess(t *testing.T) {
 	}
 }
 
+const sampleStatL2TPSwitch = `l2tp:
+  tunnels:
+    active: 1
+  l2tp-switch:
+    active: 1
+    lns_rx_bytes: 1690
+    lns_tx_bytes: 1639
+`
+
+const sampleSwitchShow = `targets:
+  test1 -> 2.29.46.254:1701 [up] active=1 bytes_in=1639 bytes_out=1690
+calls:
+  matched: 3
+  placed: 3
+  connected: 3
+  active: 1
+`
+
+// fakeCollectorWithSwitch returns a collector backed by a fake accel-cmd that
+// branches on its arguments: "show stat" gets sampleStatL2TPSwitch, "l2tp
+// switch show" gets sampleSwitchShow — exercising Collect's two separate
+// accel-cmd invocations distinctly, unlike fakeCollector above (which returns
+// the same fixed output regardless of arguments).
+func fakeCollectorWithSwitch(t *testing.T) *AccelCollector {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake not supported on windows")
+	}
+	script := `#!/bin/sh
+case "$1 $2 $3" in
+"l2tp switch show")
+cat <<'EOF'
+` + sampleSwitchShow + `EOF
+;;
+*)
+cat <<'EOF'
+` + sampleStatL2TPSwitch + `EOF
+;;
+esac
+`
+	path := filepath.Join(t.TempDir(), "accel-cmd")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake: %v", err)
+	}
+	return NewAccelCollector(path, time.Second)
+}
+
+// TestCollectL2TPSwitch drives Collect's l2tp-switch path specifically: both
+// the "show stat" l2tp-switch aggregate and the separate "l2tp switch show"
+// per-target/call metrics must appear together in one scrape.
+func TestCollectL2TPSwitch(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(fakeCollectorWithSwitch(t))
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	byName := make(map[string]*dto.MetricFamily, len(mfs))
+	for _, mf := range mfs {
+		byName[mf.GetName()] = mf
+	}
+
+	if m := byName["accel_l2tp_switch_active"]; m == nil || m.GetMetric()[0].GetGauge().GetValue() != 1 {
+		t.Errorf("accel_l2tp_switch_active missing or wrong: %v", m)
+	}
+	if m := byName["accel_l2tp_switch_lns_rx_bytes_total"]; m == nil || m.GetMetric()[0].GetCounter().GetValue() != 1690 {
+		t.Errorf("accel_l2tp_switch_lns_rx_bytes_total missing or wrong: %v", m)
+	}
+
+	target := byName["accel_l2tp_switch_target_up"]
+	if target == nil || len(target.GetMetric()) != 1 {
+		t.Fatalf("accel_l2tp_switch_target_up missing: %v", target)
+	}
+	labels := map[string]string{}
+	for _, l := range target.GetMetric()[0].GetLabel() {
+		labels[l.GetName()] = l.GetValue()
+	}
+	if labels["target"] != "test1" {
+		t.Errorf("target label = %v, want test1", labels)
+	}
+	if target.GetMetric()[0].GetGauge().GetValue() != 1 {
+		t.Errorf("accel_l2tp_switch_target_up = %v, want 1 (up)", target.GetMetric()[0].GetGauge().GetValue())
+	}
+
+	if m := byName["accel_l2tp_switch_calls_matched_total"]; m == nil || m.GetMetric()[0].GetCounter().GetValue() != 3 {
+		t.Errorf("accel_l2tp_switch_calls_matched_total missing or wrong: %v", m)
+	}
+}
+
+// TestCollectSwitchShowUnavailable proves an accel-cmd that fails "l2tp
+// switch show" specifically (e.g. an accel-ppp build without l2tp-switch)
+// only drops those series, without touching accel_up or failing the scrape —
+// see collectSwitchShow's doc comment.
+func TestCollectSwitchShowUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake not supported on windows")
+	}
+	script := `#!/bin/sh
+case "$1 $2 $3" in
+"l2tp switch show")
+echo "command unknown" >&2
+exit 1
+;;
+*)
+cat <<'EOF'
+` + sampleStat + `EOF
+;;
+esac
+`
+	path := filepath.Join(t.TempDir(), "accel-cmd")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake: %v", err)
+	}
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewAccelCollector(path, time.Second))
+
+	vals := gather(t, reg)
+	if up, ok := vals["accel_up"]; !ok || up != 1 {
+		t.Errorf("accel_up = %v (present=%v), want 1 (main scrape must still succeed)", up, ok)
+	}
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "accel_l2tp_switch_target_up" {
+			t.Errorf("accel_l2tp_switch_target_up present despite l2tp switch show failing: %v", mf)
+		}
+	}
+}
+
 // TestCollectConcurrent runs many overlapping scrapes; with the stateless
 // const-metric design this must be race-free (run with -race) and never panic.
 func TestCollectConcurrent(t *testing.T) {
