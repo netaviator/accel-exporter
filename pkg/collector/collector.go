@@ -72,7 +72,7 @@ var (
 	l2tpSwitchLNSRxBytesDesc = newDesc("accel_l2tp_switch_lns_rx_bytes_total", "Total bytes received from l2tp-switch downstream targets.")
 	l2tpSwitchLNSTxBytesDesc = newDesc("accel_l2tp_switch_lns_tx_bytes_total", "Total bytes sent to l2tp-switch downstream targets.")
 
-	l2tpSwitchTargetUpDesc       = newDesc("accel_l2tp_switch_target_up", "Whether the l2tp-switch target's tunnel is up (1) or down (0).", l2tpSwitchTargetLabels...)
+	l2tpSwitchTargetUpDesc       = newDesc("accel_l2tp_switch_target_up", "Whether the l2tp-switch target is carrying traffic (1) or not (0). For a persistent target this is the raw tunnel-established bit; for an on-demand target (the accel-ppp default) it tracks active>0 rather than the raw bit, since accel-ppp's own CLI output can't distinguish an idle-lingering-but-still-established tunnel from a fully closed one — see parser.SwitchTarget.Up.", l2tpSwitchTargetLabels...)
 	l2tpSwitchTargetActiveDesc   = newDesc("accel_l2tp_switch_target_active", "Number of currently active relayed calls on this l2tp-switch target.", l2tpSwitchTargetLabels...)
 	l2tpSwitchTargetBytesInDesc  = newDesc("accel_l2tp_switch_target_bytes_in_total", "Total bytes received from this l2tp-switch target.", l2tpSwitchTargetLabels...)
 	l2tpSwitchTargetBytesOutDesc = newDesc("accel_l2tp_switch_target_bytes_out_total", "Total bytes sent to this l2tp-switch target.", l2tpSwitchTargetLabels...)

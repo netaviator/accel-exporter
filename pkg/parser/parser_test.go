@@ -234,6 +234,47 @@ calls:
 	wantEq(t, "Calls.Active", sw.Calls.Active, 1)
 }
 
+// TestParseSwitchShowOnDemandStatusWords verifies the two extra status words
+// an on-demand target= mode target can report ("connecting", "idle" — see
+// docs/l2tp_switching.md and l2tp_switch_show_exec in accel-pppd/ctrl/l2tp/l2tp.c)
+// are parsed rather than silently dropping the whole line the way the
+// original up|down-only pattern did. on-demand is accel-ppp's default mode,
+// so this is the common case, not an edge case.
+func TestParseSwitchShowOnDemandStatusWords(t *testing.T) {
+	in := `targets:
+  connecting1 -> 203.0.113.5:1701 [connecting] active=0 bytes_in=0 bytes_out=0
+  idle1 -> 203.0.113.6:1701 [idle] active=0 bytes_in=42 bytes_out=99
+  active1 -> 203.0.113.7:1701 [up] active=2 bytes_in=100 bytes_out=200
+calls:
+  matched: 3
+  placed: 3
+  connected: 2
+  active: 2
+`
+	sw, err := parseSwitchShow(in)
+	if err != nil {
+		t.Fatalf("parseSwitchShow: %v", err)
+	}
+	if len(sw.Targets) != 3 {
+		t.Fatalf("Targets = %d, want 3 (connecting/idle lines must not be dropped): %+v", len(sw.Targets), sw.Targets)
+	}
+
+	byName := map[string]SwitchTarget{}
+	for _, tg := range sw.Targets {
+		byName[tg.Name] = tg
+	}
+
+	if tg := byName["connecting1"]; tg.Up {
+		t.Errorf("connecting1.Up = true, want false ([connecting] is not [up])")
+	}
+	if tg := byName["idle1"]; tg.Up {
+		t.Errorf("idle1.Up = true, want false ([idle] is not [up])")
+	}
+	if tg := byName["active1"]; !tg.Up {
+		t.Errorf("active1.Up = false, want true ([up])")
+	}
+}
+
 func wantEq(t *testing.T, name string, got, want float64) {
 	t.Helper()
 	if got != want {
