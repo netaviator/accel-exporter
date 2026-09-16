@@ -496,6 +496,15 @@ type SwitchTarget struct {
 	Name     string
 	PeerAddr string
 	PeerPort string
+	// Up is true only for the "up" status word — a persistent target's
+	// tunnel is STATE_ESTB, or an on-demand target has active>0 (which
+	// implies STATE_ESTB). "down" and "connecting" are both false, as is
+	// "idle" — the latter deliberately, since accel-ppp's own CLI output
+	// collapses "on-demand tunnel established but idle-lingering" and
+	// "on-demand tunnel actually closed" into the same "idle" word (see
+	// docs/l2tp_switching.md), so the raw tunnel-established bit can't be
+	// recovered from this text at all during that window; Up here tracks
+	// "carrying traffic right now", not the raw tunnel-established bit.
 	Up       bool
 	Active   float64
 	BytesIn  float64
@@ -519,8 +528,18 @@ type SwitchCalls struct {
 // (accel-pppd/ctrl/l2tp/l2tp.c: "%s -> %s:%hu [%s] active=%u bytes_in=%llu
 // bytes_out=%llu"). Peer address is always an IPv4 dotted-quad (inet_ntoa),
 // so no IPv6-in-host-port ambiguity to worry about.
+//
+// The status word has two disjoint vocabularies depending on the target's
+// connection mode (netaviator/accel-ppp's persistent/on-demand l2tp-switch
+// target= modes, docs/l2tp_switching.md): "up"/"down" for a persistent
+// target (unchanged since before mode support existed), or "up"/
+// "connecting"/"idle" for an on-demand one. Before this fix the pattern only
+// accepted up|down, so any on-demand target line (the upstream default mode)
+// simply failed to match and the whole line — and therefore that target's
+// metrics — was silently dropped, not reported as down. See SwitchTarget.Up's
+// doc comment for how the four words map to the boolean.
 var targetLinePattern = regexp.MustCompile(
-	`^(\S+) -> ([\d.]+):(\d+) \[(up|down)\] active=(\d+) bytes_in=(\d+) bytes_out=(\d+)$`,
+	`^(\S+) -> ([\d.]+):(\d+) \[(up|down|connecting|idle)\] active=(\d+) bytes_in=(\d+) bytes_out=(\d+)$`,
 )
 
 // CollectSwitchShow executes "accel-cmd l2tp switch show" and parses its
