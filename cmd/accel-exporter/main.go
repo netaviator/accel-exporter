@@ -38,6 +38,10 @@ func main() {
 		opts = append(opts, collector.WithSessions())
 		log.Printf("Per-session metrics enabled")
 	}
+	if cfg.CollectL2TPSwitch {
+		opts = append(opts, collector.WithL2TPSwitch())
+		log.Printf("l2tp-switch metrics enabled")
+	}
 	accelCollector := collector.NewAccelCollector(cfg.AccelCmdPath, cfg.ScrapeTimeout, opts...)
 	prometheus.MustRegister(accelCollector)
 

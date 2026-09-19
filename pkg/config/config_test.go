@@ -95,3 +95,17 @@ func TestNewConfigEnablesPerSessionMetrics(t *testing.T) {
 		}
 	})
 }
+
+func TestNewConfigL2TPSwitchMetricsOffByDefaultAndEnabledByFlag(t *testing.T) {
+	t.Setenv("ACCEL_EXPORTER_PORT", "")
+	withArgs(t, nil, func() {
+		if NewConfig().CollectL2TPSwitch {
+			t.Error("CollectL2TPSwitch must default to false")
+		}
+	})
+	withArgs(t, []string{"-collector.l2tp-switch"}, func() {
+		if !NewConfig().CollectL2TPSwitch {
+			t.Error("-collector.l2tp-switch did not enable CollectL2TPSwitch")
+		}
+	})
+}
