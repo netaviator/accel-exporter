@@ -19,6 +19,9 @@ type Config struct {
 
 	// CollectSessions enables the per-session metrics (username/realm labelled).
 	CollectSessions bool
+
+	// CollectL2TPSwitch enables the l2tp-switch metrics.
+	CollectL2TPSwitch bool
 }
 
 // NewConfig creates a new configuration from command line flags
@@ -30,6 +33,7 @@ func NewConfig() *Config {
 	flag.StringVar(&cfg.AccelCmdPath, "accel-cmd.path", "accel-cmd", "Path to accel-cmd binary")
 	flag.StringVar(&cfg.LogLevel, "log.level", "info", "Log level (debug, info, warn, error)")
 	flag.BoolVar(&cfg.CollectSessions, "collector.sessions", false, "Export per-session metrics (labelled by username and realm) from 'accel-cmd show sessions'; adds a series set per live session")
+	flag.BoolVar(&cfg.CollectL2TPSwitch, "collector.l2tp-switch", false, "Export l2tp-switch metrics; requires an accel-ppp build with the l2tp-switch feature")
 	flag.DurationVar(&cfg.ScrapeTimeout, "accel-cmd.timeout", 5*time.Second, "Maximum time to wait for accel-cmd to return")
 
 	flag.Parse()

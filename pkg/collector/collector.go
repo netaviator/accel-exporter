@@ -125,6 +125,9 @@ type AccelCollector struct {
 	// sessions enables the optional per-session metrics (see sessions.go).
 	sessions bool
 
+	// l2tpSwitch enables the optional l2tp-switch metrics (see switch.go).
+	l2tpSwitch bool
+
 	// scrapeFailures is the only persistent metric: a cumulative counter whose
 	// Inc is atomic and safe under concurrent scrapes.
 	scrapeFailures prometheus.Counter
@@ -160,6 +163,11 @@ func (c *AccelCollector) Describe(ch chan<- *prometheus.Desc) {
 	}
 	if c.sessions {
 		for _, d := range sessionDescs {
+			ch <- d
+		}
+	}
+	if c.l2tpSwitch {
+		for _, d := range switchDescs {
 			ch <- d
 		}
 	}
@@ -233,6 +241,9 @@ func (c *AccelCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
+	if c.l2tpSwitch {
+		c.collectL2TPSwitch(ch, stats.L2TP.Switch)
+	}
 	if c.sessions {
 		c.collectSessions(ch)
 	}

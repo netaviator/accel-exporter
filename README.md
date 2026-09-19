@@ -82,6 +82,9 @@ Usage of accel-exporter:
   -collector.sessions
         Export per-session metrics (labelled by username and realm) from
         'accel-cmd show sessions'; adds a series set per live session
+  -collector.l2tp-switch
+        Export l2tp-switch metrics; requires an accel-ppp build with the
+        l2tp-switch feature
   -log.level string
         Log level (debug, info, warn, error) (default "info")
   -web.listen-address string
@@ -174,6 +177,25 @@ The exporter exposes the following metrics:
   L2TP session counts, split by control channel (tunnel/session control plane) and
   data channel (the PPP session itself)
 
+**L2TP switch (opt-in with `-collector.l2tp-switch`):**
+
+Only available on accel-ppp builds that include the l2tp-switch feature. Off by default because it
+runs an extra `accel-cmd l2tp switch show` on every scrape. If that command fails, only the
+per-target and call series are dropped for that scrape; `accel_up` and the rest are unaffected.
+
+- `accel_l2tp_switch_active`: Currently active relayed calls, across all targets (from `show stat`)
+- `accel_l2tp_switch_lns_rx_bytes_total` / `_lns_tx_bytes_total`: Aggregate bytes to/from all targets
+- `accel_l2tp_switch_target_up` (Labels: `target`): Whether a target is carrying traffic (1) or not (0).
+  For an on-demand target this tracks `active > 0`, because `accel-cmd` reports an idle-lingering
+  tunnel and a closed one identically
+- `accel_l2tp_switch_target_active` (Labels: `target`): Active relayed calls on this target
+- `accel_l2tp_switch_target_bytes_in_total` / `_bytes_out_total` (Labels: `target`): Per-target byte counts
+- `accel_l2tp_switch_calls_matched_total` / `_placed_total` / `_connected_total`: Aggregate call
+  lifecycle counters (from `accel-cmd l2tp switch show`). `matched >= placed >= connected` always
+  holds; a gap between them means calls are failing to place or connect, not that the switch is idle
+- `accel_l2tp_switch_calls_active`: Same value as `accel_l2tp_switch_active`, read from
+  `l2tp switch show` instead of `show stat`
+
 **PPPoE:**
 
 - `accel_pppoe_starting`: Number of PPPoE sessions starting
@@ -233,7 +255,7 @@ series disappear when it ends.
 Download utilisation of a line: `rate(accel_session_tx_bytes_total[5m]) / accel_session_tx_rate_limit_bytes_per_second`
 (upload: the `rx_` pair). Traffic in Mbit/s: `rate(accel_session_tx_bytes_total{username="..."}[5m]) * 8 / 1e6`. If
 `accel-cmd show sessions` fails, only these series are dropped for that scrape; `accel_up` and the
-rest are unaffected.
+rest are unaffected. l2tp-switched calls are not in `show sessions`; see the `accel_l2tp_switch_*` metrics.
 
 ## Releasing
 

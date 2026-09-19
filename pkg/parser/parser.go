@@ -30,6 +30,7 @@ type L2TPStats struct {
 	Tunnels         TunnelSessionStats
 	SessionsControl TunnelSessionStats
 	SessionsData    TunnelSessionStats
+	Switch          L2TPSwitchStats
 }
 
 // TunnelSessionStats is the starting/active/finishing triple reported for
@@ -161,6 +162,8 @@ func parseStats(output string) (*Stats, error) {
 			parseTunnelSessionStats(&stats.L2TP.SessionsControl, key, value)
 		case "sessions (data channels)":
 			parseTunnelSessionStats(&stats.L2TP.SessionsData, key, value)
+		case "l2tp-switch":
+			parseL2TPSwitchSection(&stats.L2TP.Switch, key, value)
 		default:
 			if strings.HasPrefix(section, "radius") {
 				radiusMatch := regexp.MustCompile(`radius\((\d+), ([\d\.]+)\)`).FindStringSubmatch(section)
