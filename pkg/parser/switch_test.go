@@ -131,3 +131,47 @@ calls:
 		t.Errorf("active1.Up = false, want true ([up])")
 	}
 }
+
+// TestParseSwitchShowCallLineWithByteCounters covers the per-call detail line
+// as accel-ppp prints it today: it now ends in its own bytes_in/bytes_out. It
+// must not be mistaken for a target, and it must not leak its counters into
+// the target above it.
+func TestParseSwitchShowCallLineWithByteCounters(t *testing.T) {
+	in := `targets:
+  lns1 -> 203.0.113.10:1701 [idle] active=0 bytes_in=0 bytes_out=0
+  lns2 -> 203.0.113.11:1701 [up] active=1 bytes_in=5000 bytes_out=6000
+    call: 198.51.100.20/0.0.0.0 eth 5/43$USER tunnel 43443-45988 / 12682-5 bytes_in=111 bytes_out=222
+  lns3 -> 203.0.113.12:1701 [idle] active=0 bytes_in=624 bytes_out=1332
+calls:
+  matched: 4
+  placed: 4
+  connected: 3
+  active: 1
+`
+	sw, err := parseSwitchShow(in)
+	if err != nil {
+		t.Fatalf("parseSwitchShow: %v", err)
+	}
+	if len(sw.Targets) != 3 {
+		t.Fatalf("Targets = %d, want 3: %+v", len(sw.Targets), sw.Targets)
+	}
+
+	want := []struct {
+		name         string
+		up           bool
+		active       float64
+		bytesIn, out float64
+	}{
+		{"lns1", false, 0, 0, 0},
+		{"lns2", true, 1, 5000, 6000},
+		{"lns3", false, 0, 624, 1332},
+	}
+	for i, w := range want {
+		g := sw.Targets[i]
+		if g.Name != w.name || g.Up != w.up || g.Active != w.active || g.BytesIn != w.bytesIn || g.BytesOut != w.out {
+			t.Errorf("Targets[%d] = %+v, want %+v", i, g, w)
+		}
+	}
+	wantEq(t, "Calls.Active", sw.Calls.Active, 1)
+	wantEq(t, "Calls.Connected", sw.Calls.Connected, 3)
+}
